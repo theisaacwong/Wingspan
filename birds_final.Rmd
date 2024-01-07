@@ -1,0 +1,494 @@
+First, load the necessary libraries and read in the game data.
+```{r}
+source("./my_libraries.R")
+df0 <- fread("./wingspan_data_public.tsv") %>% as.data.frame()
+df0[is.na(df0)] <- ""
+df0[df0=="NA"] <- ""
+
+N_PLAYS_THRESHOLD <- 12 # filtering to players that have played enough games
+
+# for later analysis, it will be easier to have easy access to every game each player has played
+# creates a list of dataframes, each df is one player's games
+cluster <- makeCluster(detectCores()-1)
+clusterExport(cl=cluster, varlist=c("df0"), envir = environment())
+list_by_player <- lapply(u(df0$Player), function(x){
+  return(df0[df0$Player==x, ])
+})
+names(list_by_player) <- df0$Player %>% u
+stopCluster(cluster)
+
+MY_COLORS <- c(wes_palette("Darjeeling1"), wes_palette("Darjeeling2")) %>% palette_sort
+temp1 <- table(df0$Player)
+filtered_players <- names(temp1)[temp1>N_PLAYS_THRESHOLD]
+```
+
+
+
+# Winrate
+The first interesting thing would be to look at the winrate by player. For this data, there are a few people who have only played a few times so we'll filter them out.
+```{r}
+# get each player's winrate
+winrate_by_player <- lapply(list_by_player, function(x){
+  return(round(sum(x$Win) / nrow(x), 3))
+})
+names(winrate_by_player) <- names(list_by_player)
+
+df_wr <- data.frame(player = names(list_by_player), 
+                    winrate = winrate_by_player %>% unlist,
+                    N = list_by_player %>% lapply(nrow) %>% unlist,
+                    stringsAsFactors = FALSE, 
+                    row.names = NULL)
+df_wr <- df_wr[order(df_wr$winrate, decreasing = TRUE), ]
+
+my_data <- df_wr[df_wr$player %in% filtered_players, ]
+my_data$fac <- factor(my_data$player, levels = my_data$player[order(my_data$winrate, decreasing = TRUE)]) # set factor orders
+my_colors <- MY_COLORS[seq(1, length(MY_COLORS), length.out=length(filtered_players)) %>% round]
+
+g1 <- ggplot(my_data, aes(y = winrate, x=fac)) + 
+  geom_bar(stat = "identity", fill=my_colors, alpha = 0.6, col="BLACK") + 
+  scale_y_continuous(breaks = seq(0,1,.1), labels = paste0(seq(0,100,10), "%")) +
+  geom_text(aes(x = fac, y = winrate, label = paste0(winrate*100, "%")), size = 3, vjust = -1) +
+  coord_cartesian(ylim=c(0,.7)) + 
+  labs(title = "Win rate by player: what are the odds a player wins any game they play?", 
+       x = NULL,
+       y = "Win rate (%)")
+g1
+```
+This is a little tricky to interpret, as not every game has the same set of players. Instead, I've chosen to measure a player's winrate by how often they win games compared to how often they lose games. So, given that a player plays a game, what is the chance that that player wins? This doesn't take in to account the number of players in each game and so is heavily skewed by some players playing lots of two player games. If each player was equally skilled, you would expect an even distribution dependent on the frequency of game sizes that player played. For example, if Erk plays mostly 4 and 5 player games, you would expect to see a winrate between 20-25%, assuming equal chances of winning and losing. Whereas if Pent plays mostly 2 and 3 player games, you would expect to see a winrate between 33-50%, also assuming equal chances of winning and losing. My game data is unfortunately missing a lot of metadata, including how many people were playing in each game so this is the best that I can do.
+
+
+# Score distribution
+Next, lets look at final score distribution. What I like most about wingspan is that you're playing against yourself as much as other players. Yes, whether you win or lose depends on how well other players did; but, because your aviary board is mostly independent from those of other players, you get a lot of satisfaction just by getting a "good" score. So what constitutes a good score?
+```{r}
+g1 <- ggplot(data = df0, aes(x = Final_score)) + 
+  geom_histogram(bins = 20, fill = wes_palette("FantasticFox1")[1], alpha = 0.7, position = "identity", aes(y=..density..), colour="BLACK") + 
+  geom_density(col = wes_palette("FantasticFox1")[3], lwd = 1.5) +
+  scale_x_continuous(breaks=seq(60, 170, 10)) +
+  labs(title = paste0("Final Score Distirbution, \u0078\u0305=", mean(df0$Final_score) %>% round(1), ", \u03C3=", sd(df0$Final_score) %>% round(1)), 
+       x = "Score", 
+       y = "Density")
+g1
+```
+Final score distributions follow a mostly normal distribution. The data also seems to fit my group's experience that getting above 100 feels like a "good game". Next, let's look at at what winning and losing scores look like. 
+```{r}
+df0$Win_bool <- df0$Win & 1
+my_labels <- c("Lose", "Win")
+my_name <- "Result"
+
+g2 <- ggplot(data = df0, aes(x = Final_score, fill = Win_bool, color = Win_bool)) + 
+  geom_histogram(bins = 21, alpha = 0.5, position = "identity",  colour="BLACK") + 
+  scale_fill_manual(values=c(wes_palette("FantasticFox1")[5], wes_palette("FantasticFox1")[3]), labels=my_labels, name=my_name) +
+  scale_color_manual(values = c(wes_palette("FantasticFox1")[5], wes_palette("FantasticFox1")[3]), labels=my_labels, name=my_name) +
+  scale_x_continuous(breaks=seq(60, 170, 10)) +
+  labs(title = paste0(
+    "Winning Score Distirbution, \u0078\u0305=", mean(df0$Final_score[df0$Win_bool]) %>% round(1), ", \u03C3=", sd(df0$Final_score[df0$Win_bool]) %>% round(1), "\n", 
+    "Losing Score Distirbution, \u0078\u0305=", mean(df0$Final_score[!df0$Win_bool]) %>% round(1), ", \u03C3=", sd(df0$Final_score[!df0$Win_bool]) %>% round(1)), 
+       x = "Final Score", 
+       y = "Frequncy") +
+  geom_line(data=df0[df0$Win_bool, ], aes(y = ..density..*1000, fill=NULL, color=NULL), stat = 'density', color = wes_palette("FantasticFox1")[3], lwd = 1.3) +
+  stat_function(fun = dnorm) +
+  geom_line(data=df0[!df0$Win_bool, ], aes(y = ..density..*1800, fill=NULL, color=NULL), stat = 'density', color = wes_palette("FantasticFox1")[5], lwd = 1.3) +
+  stat_function(fun = dnorm) 
+g2 %>% print %>% suppressWarnings()
+```
+There's no clear cutoff for a score guaranteed to win, and even with a score as high as 123, you're only 20% about likely to have a winning game. Yes, half of all games are won with scores higher than 122 but lots of those games have players coming in second with high scores too! 
+
+Another heuristic most people think about when deciding which birds to play is how many points that bird will get you over the course of a game. As I've only recently started measuring which players are playing which birds, I don't have as much data as I'd like for this analysis.
+```{r}
+df0$pointsperbird[df0$N_birds!=0] <- df0$Final_score[df0$N_birds!=0] / df0$N_birds[df0$N_birds!=0] # filtering where I don't have data
+g3 <- ggplot(data = df0[df0$N_birds!=0,], aes(x = pointsperbird, fill = Win_bool, color = Win_bool)) + 
+  geom_histogram(bins = 21, alpha = 0.5, position = "identity",  colour="BLACK") + 
+  scale_fill_manual(values=c(wes_palette("FantasticFox1")[5], wes_palette("FantasticFox1")[3]), labels=my_labels, name=my_name) +
+  scale_color_manual(values = c(wes_palette("FantasticFox1")[5], wes_palette("FantasticFox1")[3]), labels=my_labels, name=my_name) +
+  scale_x_continuous(breaks=seq(5,15)) +
+  labs(title = paste0(
+    "Winning Score Distirbution, \u0078\u0305=", mean(df0$pointsperbird[df0$Win_bool & df0$N_birds!=0]) %>% round(1), ", \u03C3=", sd(df0$pointsperbird[df0$Win_bool & df0$N_birds!=0]) %>% round(1), "\n", 
+    "Losing Score Distirbution, \u0078\u0305=", mean(df0$pointsperbird[!df0$Win_bool & df0$N_birds!=0]) %>% round(1), ", \u03C3=", sd(df0$pointsperbird[!df0$Win_bool & df0$N_birds!=0]) %>% round(1)), 
+       x = "Points per bird", 
+       y = "Frequncy") +
+  geom_line(data=df0[df0$Win_bool, ], aes(y = ..density..*12, fill=NULL, color=NULL), stat = 'density', color = wes_palette("FantasticFox1")[3], lwd = 1.3) +
+  stat_function(fun = dnorm) +
+  geom_line(data=df0[!df0$Win_bool, ], aes(y = ..density..*20, fill=NULL, color=NULL), stat = 'density', color = wes_palette("FantasticFox1")[5], lwd = 1.3) +
+  stat_function(fun = dnorm) 
+g3 %>% print %>% suppressWarnings()
+```
+It seems like I don't have enough data to find how much value you should be getting out of each bird to increase your chances of winning, or even if there is correlation in bird points to win chance. The two distributions are very close and the game ramifications of 1 or 2 points in games that routinely exceed 120 are hard to imagine. Overall, this actually makes me quite happy to see because it suggests that I shouldn't worry so much when stressing which decisions in the game to make. 
+
+
+Next, let's look at the category breakdowns for each player split by wins and losses.
+```{r}
+# calculate stats per player
+df0_stat <- lapply(list_by_player, function(df_t){
+  df_w <- df_t[df_t$Win_bool, ]
+  df_l <- df_t[!df_t$Win_bool, ]
+  
+  df_w_stat <- lapply(colnames(df_w)[1:8], function(x){
+    df_r <- data.frame(mean = mean(df_w[[x]]),
+                       median = median(df_w[[x]]),
+                       sd = 1.96*sd(df_w[[x]])/sqrt(length(df0[[x]])))
+    colnames(df_r) <- paste0(x, c("_mean", "_median", "_sd"))
+    return(df_r)
+  }) %>% do.call(cbind, .) 
+  df_w_stat$Win <- TRUE
+  
+  df_l_stat <- lapply(colnames(df_l)[1:8], function(x){
+    df_r <- data.frame(mean = mean(df_l[[x]]),
+                       median = median(df_l[[x]]),
+                       sd = 1.96*sd(df_l[[x]])/sqrt(length(df0[[x]])))
+    colnames(df_r) <- paste0(x, c("_mean", "_median", "_sd"))
+    return(df_r)
+  }) %>% do.call(cbind, .) 
+  df_l_stat$Win <- FALSE
+  
+  df_r <- rbind(df_w_stat, df_l_stat)
+  return(df_r)
+}) %>% do.call(rbind, .)
+df0_stat$player <- names(list_by_player) %>% rep(each=2)
+
+#calculate all players
+df_w <- df0[df0$Win_bool, ]
+df_l <- df0[!df0$Win_bool, ]
+
+df_w_stat <- lapply(colnames(df_w)[1:8], function(x){
+  df_r <- data.frame(mean = mean(df_w[[x]]),
+                     median = median(df_w[[x]]),
+                     sd = 1.96*sd(df_w[[x]])/sqrt(length(df0[[x]])))
+  colnames(df_r) <- paste0(x, c("_mean", "_median", "_sd"))
+  return(df_r)
+}) %>% do.call(cbind, .) 
+df_w_stat$Win <- TRUE
+
+df_l_stat <- lapply(colnames(df_l)[1:8], function(x){
+  df_r <- data.frame(mean = mean(df_l[[x]]),
+                     median = median(df_l[[x]]),
+                     sd = 1.96*sd(df_l[[x]])/sqrt(length(df0[[x]])))
+  colnames(df_r) <- paste0(x, c("_mean", "_median", "_sd"))
+  return(df_r)
+}) %>% do.call(cbind, .) 
+df_l_stat$Win <- FALSE
+
+# merge data and add in new columns
+df0_stat_all <- rbind(df_w_stat, df_l_stat)
+df0_stat_all$player <- "ALL"
+
+df0_cat_stat <- rbind(df0_stat, df0_stat_all)
+df0_cat_stat[is.na(df0_cat_stat)] <- 0
+
+df0_cat_stat <- merge(df0_cat_stat, df_wr, by = "player", all = TRUE)
+df0_cat_stat$winrate[df0_cat_stat$player=="ALL"] <- 1
+df0_cat_stat$N[df0_cat_stat$player=="ALL"] <- 1
+df0_cat_stat <- df0_cat_stat[df0_cat_stat$player %in% c("ALL", filtered_players), ]
+df0_cat_stat <- df0_cat_stat[order(df0_cat_stat$winrate, decreasing = FALSE), ]
+df0_cat_stat$fac <- factor(df0_cat_stat$player, ordered = TRUE)
+uni_cols <- which(colnames(df0_cat_stat) %in% c("player", "winrate", "N", "fac", "Win"))
+
+df0_cat_stat$Win <- ifelse(df0_cat_stat$Win, "Win", "Lose")
+
+# generate a plot for each score category
+my_cats <- colnames(df0)[1:8]
+list_plots_by_cat <- lapply(seq_along(my_cats), function(curr_cat){
+  
+  df0_temp_old <- df0_cat_stat[, c(uni_cols, grep(my_cats[curr_cat], colnames(df0_cat_stat)) %>% sort(decreasing = FALSE) )]
+  colnames(df0_temp_old) <- c("player", "Win", "winrate", "N", "fac","mean", "median", "sd")
+  
+  df0_temp <- df0_temp_old
+  my_colors <- wes_palette("FantasticFox1")[c(5,3)]
+  g_temp <- ggplot(df0_temp, aes(fill=Win, x=player, y=mean)) + 
+    geom_bar(stat="identity", position = "dodge", alpha=0.7) +
+    scale_fill_manual(values=my_colors, name = "Result: ") +
+    scale_x_discrete(limits=df0_cat_stat$player) +
+    geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=.2,position=position_dodge(1.8)) +
+    labs(title = my_cats[curr_cat],
+         x=NULL) +
+    geom_hline(yintercept = df0_temp_old$mean[df0_temp_old$player=="ALL"], linetype="dashed", lwd=1, alpha=1, col=wes_palette("FantasticFox1")[c(5,3)]) +
+    theme(legend.position="none") +
+    coord_cartesian(ylim=c(0,max(df0_temp$mean) + max(df0_temp$sd))) +
+    coord_flip() 
+  
+  return(g_temp)
+})
+
+legend_b <- cowplot::get_legend(
+  list_plots_by_cat[[1]] + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+b_grid <- plot_grid(plotlist = list_plots_by_cat, nrow = 2) 
+b_card <- plot_grid(b_grid, legend_b, ncol = 1, rel_heights = c(1, .1))
+  
+ggsave(paste0("./wingspan_score_summary.pdf"), plot = b_card, device = "pdf", width = 20, height = 10, units = "in", limitsize = FALSE)
+
+b_card %>% plot
+```
+Here, we can see the strategies across all players, split by wins and losses. For example, on the Bonus Card category, Pent tends to score much higher than average, whether he wins or loses. In the same category, when Florina wins games, she's likely scored a lot of bonus cards. But for games she's lost, she scores less bonus card points than an average player who's lost scores. Other interesting points are Hawkeye, who wins and loses his games whether he scored high bonus card points or not. Kent seems to not care about caching food at all. Given how small the difference in cached food is between losing and winning games, maybe he's got the right strategy. On cached foods, Florina is extra interesting because she loses games where she has lots of cached food and wins games where she has barely any. 
+
+Overall, while these are very interesting stats to look at, they don't really give that much useful information on what a winning strategy is. Since the data comes from just observing games, it's not a strong indicator of specific strategies; like whether tucking cards is a better strategy than laying eggs. While Kent scores well on End-of-round goals on games that he wins, we can't know for sure if going for those end of round goals is a winning strategy for him. He could have just as easily tried to go for them, scored very few, then lost. 
+
+Just for fun, we can look at each player's score breakdown even further.
+```{r}
+player_score_distributions <- lapply(filtered_players, function(THIS_PLAYER){
+  
+  df0_player <- list_by_player[[THIS_PLAYER]]
+  df0_player$focus <- TRUE
+  
+  df0_mult <- do.call(rbind, list_by_player[names(list_by_player) != THIS_PLAYER])
+  df0_mult$focus <- FALSE
+  
+  df0_mult <- rbind(df0_player, df0_mult)
+  
+  my_labels <- c("Everyone Else", THIS_PLAYER)
+  my_name <- "Key"
+  
+  my_cats <- colnames(df0_mult)[1:8]
+  list_plots_this_player <- lapply(seq_along(my_cats), function(curr_cat){
+    
+    df0_temp <- df0_mult[, c(curr_cat, which(colnames(df0_mult) %in% c("Win", "Player", "Win_bool", "focus")))]
+    colnames(df0_temp) <- c("cat", colnames(df0_mult)[which(colnames(df0_mult) %in% c("Win", "Player", "Win_bool", "focus"))])
+    
+    df_med <- plyr::ddply(df0_temp, "focus", summarise, grp.med=median(cat))
+    
+    g_temp <- ggplot(df0_temp, aes(x = cat, fill = focus, color = focus, y=..density..)) + 
+      geom_histogram(bins = 12, alpha = 0.7, position = "identity",  colour="BLACK") + 
+      scale_fill_manual(values=c(wes_palette("FantasticFox1")[1], wes_palette("FantasticFox1")[3]), labels=my_labels, name=my_name) +
+      scale_color_manual(values = c(wes_palette("FantasticFox1")[1], wes_palette("FantasticFox1")[3]), labels=my_labels, name=my_name) +
+      labs(title = paste0(
+        my_cats[curr_cat], " point distribution\n",
+        THIS_PLAYER, "'s:  median:", median(df0_temp$cat[df0_temp$focus]) %>% round(1), ", \u03C3=", sd(df0_temp$cat[df0_temp$focus]) %>% round(1), "\n", 
+        "Everyone Else's:  median:", median(df0_temp$cat[!df0_temp$focus]) %>% round(1), ", \u03C3=", sd(df0_temp$cat[!df0_temp$focus]) %>% round(1)), 
+        x = "Final Score", 
+        y = "Frequncy") +
+      geom_density(lwd = 1, alpha=0) + 
+      geom_vline(data=df_med, aes(xintercept=grp.med, color=focus), linetype="dashed", lwd=1.3, alpha=1) +
+      theme(legend.position="none")
+    
+    return(g_temp)
+  })
+  
+  
+  legend_b <- cowplot::get_legend(
+    list_plots_this_player[[1]] + 
+      guides(color = guide_legend(nrow = 1)) +
+      theme(legend.position = "bottom")
+  )
+  b_grid <- plot_grid(plotlist = list_plots_this_player, nrow = 2) 
+  b_card <- plot_grid(b_grid, legend_b, ncol = 1, rel_heights = c(1, .08))
+  
+  
+  # ggsave(paste0("./wingspan_", THIS_PLAYER, "_score_card.pdf"), plot = b_card, device = "pdf", width = 20, height = 10, units = "in", limitsize = FALSE)
+  return(b_card)
+})
+
+player_score_distributions[[11]] %>% print %>% suppressWarnings()
+```
+There's honestly too much data and not enough obvious points of interest to go through every graph, but it is neat to see exactly how each player compares to everyone else. 
+
+
+# Statistical Analysis
+Next, let's put all the score data into a model and see if it can find patterns for winning strategies. 
+training on real data
+TODO: multiple regression to see which categories, if any, are more likely to predict a winning score. 
+TODO: bootstrap data and feed into a model to see whether any category is better than any other
+
+# Tier List
+I've recently started recording which birds people play to see whether any birds are better than others. My group argues a lot on which birds are the best (the Wood Duck and the Willie Wagtail are obviously the best) and I wanted to see if any of our favorites are actually backed by the data. Unfortunately, I don't have data for most games. To prevent small observations from heavily skewing the tier list rankings, I've implemented a weighting heuristic that functions as follows: (exact details at the end)
+- Every time a bird is played, it's given a score between -100 and 100. 
+- Higher values are assigned depending on which place the bird came in
+- Games with more players are more relevant
+- Birds that have been played more times receive a bigger multiplier to their scores
+
+The overall goal is that birds that tend to win receive a higher heuristic. A bird that came second in a six player game is stronger than a bird that came second in a three player game. The difference between first and second is small where the difference between third and fourth is larger. A bird that's been played more has its score magnitude increased (either made more positive or more negative).
+
+TODO: get actual pictures of birds
+```{r}
+SHORT_TIER_LIST <- TRUE
+OUTPUT <- paste0("./bird_tier_list_", ifelse(SHORT_TIER_LIST, "short", "full"),".png")
+
+FOREST <- wes_palette("Cavalcanti1")[4]
+GRASS <- wes_palette("Moonrise1")[1]
+WATER <- wes_palette("GrandBudapest2")[4]
+
+# function to determin weight based on which place the bird came in and how many players were in the game
+foo <- function(place, n_players, max_score, log_base=exp(1)){
+  log_range <- log(1:n_players, base = log_base)^3 %>% rev
+  normalized_range <- (log_range)/max(log_range)
+  scaling_factor <- normalized_range[place]
+  weighted_score <- scaling_factor * max_score * 2 - max_score
+  return(weighted_score)
+}
+
+bar <- function(mod_exp, N_PLAYERS, log_base=exp(1)){
+  log_range <- log(1:N_PLAYERS, base = log_base)^mod_exp 
+  normalized_range <- (log_range)/max(log_range)  + 0.5
+  return(normalized_range)
+}
+
+# weights for number of players
+#               1 2  3  4  5   6
+max_scores <- c(0,70,80,90,100,120)
+df_weights <- lapply(2:6, function(N){
+  weights <- lapply(1:N, foo, N, max_scores[N]) %>% unlist
+  labels <- paste(1:N, N, sep ="_")
+  data.frame(key=labels,
+             value=weights,
+             stringsAsFactors = FALSE) %>% return
+}) %>% do.call(rbind, .)
+
+placeToWeight <- HashMap$new()
+placeToWeight$populate(df_weights, "key", "value")
+df_birds <- data.frame(all_birds = c(df0$Forest %>% lapply(str_split, pattern=",") %>% unlist,
+               df0$Grass  %>% lapply(str_split, pattern=",") %>% unlist,
+               df0$Water  %>% lapply(str_split, pattern=",") %>% unlist) %>% u,
+               wins = 0,
+               loss = 0,
+               weighted_score = 0,
+               habitat = "",
+               hab_colour = "",
+               stringsAsFactors = FALSE)
+df_birds <- df_birds[df_birds$all_birds != "", ]
+
+df_birds$habitat[df_birds$all_birds %in% unlist(str_split(df0$Forest, ","))] <- "FOREST"
+df_birds$habitat[df_birds$all_birds %in% unlist(str_split(df0$Grass, ","))]  <- "GRASS"
+df_birds$habitat[df_birds$all_birds %in% unlist(str_split(df0$Water, ","))]  <- "WATER"
+
+df_birds$hab_colour[df_birds$habitat == "FOREST"] <- FOREST
+df_birds$hab_colour[df_birds$habitat == "GRASS"] <- GRASS
+df_birds$hab_colour[df_birds$habitat == "WATER"] <- WATER
+
+
+col_win <- which(colnames(df_birds)=="wins")
+col_loss <- which(colnames(df_birds)=="loss")
+col_ws <- which(colnames(df_birds)=="weighted_score")
+
+for(i in seq_down(df0)){
+  if(df0$Forest[i]=="" & df0$Grass[i]=="" & df0$Water[i]=="" ){next}
+  
+  curr_birds <- paste(df0$Forest[i], df0$Grass[i], df0$Water[i], sep=",") %>% str_split(",") %>% unlist
+  curr_cat <- df0$Win_bool[i] %>% ifelse(col_win,col_loss)
+  for(bird in curr_birds){
+    df_birds[df_birds$all_birds==bird, curr_cat] <- df_birds[df_birds$all_birds==bird, curr_cat] + 1
+    df_birds[df_birds$all_birds==bird, col_ws] <- df_birds[df_birds$all_birds==bird, col_ws] + placeToWeight$get(df0$Place[i])
+  }
+}
+remove(i)
+
+df_birds$N <- df_birds$wins + df_birds$loss
+df_birds$winrate <- (df_birds$wins / df_birds$N) %>% round(digits=2)
+df_birds$weighted_score <- (df_birds$weighted_score / df_birds$N) %>% round(digits=0)
+
+
+df_birds <- df_birds[order(df_birds$winrate, df_birds$weighted_score, df_birds$N, decreasing = TRUE), ]
+df_birds$name <- df_birds$all_birds %>% str_remove_all("[-_\\s0-9]") %>% tolower()
+df_birds$name <- NULL
+
+
+FOREST <- wes_palette("Cavalcanti1")[4]
+GRASS <- wes_palette("Moonrise1")[1]
+WATER <- wes_palette("GrandBudapest2")[4]
+
+df_birds$display_name <- df_birds$all_birds %>% str_replace_all("_", " ") %>% gsub('([^\n]{1,13})(\\s|$)', '\\1\n', .) %>% str_remove_all("\n$")
+
+
+# re-weight the weighted scores
+my_weight_scores <- bar(0.6, max(df_birds$N))
+MAX_PLAYS <- max(df_birds$N)
+for(i in 1:MAX_PLAYS){
+  df_birds$weighted_score[df_birds$N==i] <- df_birds$weighted_score[df_birds$N==i] * my_weight_scores[i]  
+}
+rm(i)
+
+df_birds$weighted_score <- df_birds$weighted_score %>% round(digits = 1)
+
+list_bird_cards <- lapply(seq_down(df_birds), function(x){
+  g_curr <- ggdraw() + 
+    draw_label(df_birds$display_name[x], fontface = "bold", size=20, y=0.72) +
+    draw_label(paste0(round(df_birds$winrate[x]*100, 0), "% [", df_birds$weighted_score[x], "]"), size=15,y=0.35) + 
+    draw_label(paste0(df_birds$wins[x], "W - ", df_birds$loss[x], "L"), size=12, y=0.21) +
+    theme(plot.background = element_rect(fill = df_birds$hab_colour[x], colour = "black", linewidth = 2))
+  return(g_curr)  
+})
+names(list_bird_cards) <- df_birds$all_birds
+list_bird_cards <- list_bird_cards[names(list_bird_cards)[order(df_birds$weighted_score, decreasing=TRUE)]]
+
+ggplot(data = df_birds, aes(x = weighted_score)) + 
+  geom_histogram(bins = 15, fill = wes_palette("FantasticFox1")[1], alpha = 0.7, position = "identity", aes(y=..density..), colour="BLACK") + 
+  geom_density(col = wes_palette("FantasticFox1")[3], lwd = 1.5) +
+  scale_x_continuous(breaks=seq(-100,100,20)) +
+  labs(title = paste0("Weighted score distribution, \u0078\u0305=", mean(df_birds$weighted_score) %>% round(1), ", \u03C3=", sd(df_birds$weighted_score) %>% round(1)), 
+       x = "Score", 
+       y = "Density")
+
+
+birds_forest <- which(df_birds$habitat=="FOREST")
+birds_grass <- which(df_birds$habitat=="GRASS")
+birds_water <- which(df_birds$habitat=="WATER")
+
+N_TIERS <- 5
+df_tiers <- data.frame(labels = c(LETTERS[seq(1,N_TIERS-1,1)], "F"),
+                       breakpoints = quantile(df_birds$weighted_score, probs=seq(1,0,length.out=N_TIERS+1))[-c(1)],
+                       breakpoints_pct = quantile(df_birds$weighted_score, probs=seq(1,0,length.out=N_TIERS+1))[-c(1)]/100,
+                       stringsAsFactors = FALSE)
+
+list_list_plot_cats <- vector("list", length = 3)
+list_list_plot_cats <- lapply(1:3, function(x){
+  temp_list <- vector("list", length = nrow(df_tiers))
+  names(temp_list) <- df_tiers$labels
+  return(temp_list)
+})
+names(list_list_plot_cats) <- c("Forest", "Grass", "Water")
+
+HABITAT <- c("FOREST", "GRASS", "WATER")
+names(HABITAT) <- c("FOREST", "GRASS", "WATER")
+
+df_birds <- df_birds[order(df_birds$weighted_score, decreasing = TRUE), ]
+
+indexed_birds <- HashMap$new()
+list_list_plot_cats <- lapply(HABITAT, function(HAB){
+  list_tiers <- lapply(seq_down(df_tiers), function(TIER){
+    these_birds <- lapply(seq_down(df_birds), function(BIRD){
+      if(df_birds$habitat[BIRD]==HAB & df_birds$weighted_score[BIRD]>=df_tiers$breakpoints[TIER] & indexed_birds$containsKey(df_birds$all_birds[BIRD])==FALSE){
+        indexed_birds$put(df_birds$all_birds[BIRD], "FOO")
+        if(df_birds$N[BIRD]==1 & SHORT_TIER_LIST){return()}
+        return(df_birds$all_birds[BIRD])
+      }
+    }) %>% unlist
+    return(list_bird_cards[these_birds])
+  })
+  names(list_tiers) <- df_tiers$labels
+  return(list_tiers)
+})
+names(list_list_plot_cats) <- HABITAT
+
+list_list_tiers <- lapply(list_list_plot_cats, function(HAB){
+  list_tiers <- lapply(HAB, function(CURR_TIER){
+    if(length(CURR_TIER)==0){return(ggdraw())} 
+    plot_grid(plotlist=CURR_TIER, nrow = round(sqrt(length(CURR_TIER)),0)) + 
+      theme(plot.background = element_rect(colour = "black", fill=NA, linewidth =6)) %>% return    
+  })
+  plot_grid(plotlist=list_tiers, ncol=1) + 
+      theme(plot.background = element_rect(colour = "black", fill=NA, linewidth =12)) %>% return    
+})
+mega_plot <- plot_grid(plotlist = list_list_tiers, ncol=3)
+
+tier_labels <- lapply(df_tiers$labels, function(x){
+  temp_l <- ggdraw() + draw_label(x, fontface = "bold", size=40) + 
+    theme(plot.background = element_rect(fill = "white", color = "black", linewidth = 12))
+  return(temp_l)
+})
+tier_label <- plot_grid(plotlist = tier_labels, ncol=1) + 
+  theme(plot.background = element_rect(colour = "black", fill=NA, linewidth =12))
+
+labeled_tier_plot <- plot_grid(tier_label, mega_plot, ncol = 2, rel_widths = c(1,20))
+
+
+png(filename = OUTPUT, width = 3000, height = 3000,
+    units = "px", pointsize = 2, bg = "black", res = NA,
+    restoreConsole = TRUE)
+labeled_tier_plot %>% plot
+dev.off()
+```
+
+
+
+
+
+
